@@ -1,0 +1,83 @@
+#Limitations: 
+#Uses call create date, not date recorded on call activity, so calls MUST be logged as soon as possible after they occurred. 
+#Does not filter on call types. 
+
+import os
+import requests
+from datetime import datetime
+
+def main(event):
+    # Use inputs to get data from any action in your workflow and use it in your code instead of having to use the HubSpot API.
+    api_key = os.getenv("hstoken")  # Make sure this environment variable is set
+    contact_id = event.get('inputFields').get('hs_objectid')  # Assuming hs_objectid corresponds to the contact ID
+
+    # First API call to get the list of calls associated with the contact
+    calls_url = f"https://api.hubapi.com/crm/v3/objects/contacts/{contact_id}/associations/calls"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    response = requests.get(calls_url, headers=headers)
+    
+    # Check for a successful response
+    if response.status_code != 200:
+        return {"outputFields": {"error": "Failed to retrieve calls", "status_code": response.status_code}}
+
+    calls_data = response.json()
+
+    # Extracting call IDs from the response
+    call_ids = [call['id'] for call in calls_data.get('results', [])]
+
+    # Initialize variables to store the most recent call date and its ID
+    most_recent_call_date = None
+    most_recent_call_id = None
+
+    # Loop through each call ID and get the details to find the most recent one
+    for call_id in call_ids:
+        call_details_url = f"https://api.hubapi.com/crm/v3/objects/calls/{call_id}"
+        response = requests.get(call_details_url, headers=headers)
+        
+        # Check for a successful response
+        if response.status_code != 200:
+            continue  # Skip this call if we can't get details
+        
+        call_details = response.json()
+        
+        # Extracting call creation date
+        call_createdate = call_details['properties']['hs_createdate']
+
+
+        # Comparing with the current most recent call date
+        if most_recent_call_date is None or call_createdate > most_recent_call_date:
+            most_recent_call_date = call_createdate
+            most_recent_call_id = call_id
+
+    # If no calls were found, handle that case
+    if most_recent_call_date is None:
+        return {
+            "outputFields": {
+                "most_recent_call_date": None,
+                "most_recent_call_id": None
+            }
+        }
+
+    # Formatting the most recent call date as YYYY-MM-DD
+    most_recent_call_date = call_createdate
+
+    # Make an API call to update the last_call_date property of the contact
+    update_url = f"https://api.hubapi.com/crm/v3/objects/contacts/{contact_id}"
+    update_data = {
+        "properties": {
+            "date___last_connected_voice_call": most_recent_call_date  # Ensure this property exists on the contact
+        }
+    }
+    response = requests.patch(update_url, headers=headers, json=update_data)
+
+    # Check for a successful update response
+    if response.status_code != 200:
+        return {"outputFields": {"error": "Failed to update last call date", "status_code": response.status_code}}
+
+    # Return the output data that can be used in later actions in your workflow.
+    return {
+        "outputFields": {
+            "most_recent_call_date": most_recent_call_date,
+            "most_recent_call_id": most_recent_call_id
+        }
+    }
